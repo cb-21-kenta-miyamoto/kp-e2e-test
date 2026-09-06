@@ -43,6 +43,10 @@ const MAP_FORM_ID_CELL = 'B4';       // 編集用のフォーム ID を入れる
 const MAP_TARGET_URL_CELL = 'B5';    // 投稿したいフォームの回答URL（照合用・任意）
 const MAP_ACTUAL_URL_CELL = 'B5';    // 実際の回答URLを書き戻す先（B5 の隣 C5 に出す）
 const MAP_ACTUAL_URL_OUT = 'C5';
+
+// 回答が流れ込むシート。ここからフォームの編集URLを引く
+const RESPONSE_BOOK_ID = '159r0cLcqNY9w3xrp4D_ELgu5a5OV5drkfrIVRrGy39U'; // 【kp】NG一覧
+const RESPONSE_SHEET_NAME = '【編集厳禁】NGフォーム';
 const MAP_HEADER_ROW = 6;  // フォーム項目の見出し行
 const MAP_FIRST_ROW = 7;
 
@@ -111,6 +115,7 @@ function onOpen() {
     .createMenu('NGフォーム')
     .addItem('準備する（初回だけ）', 'prepare')
     .addSeparator()
+    .addItem('回答シートからフォームIDを取り出す', 'findFormIdFromResponseSheet')
     .addItem('フォームの項目を読み込み直す', 'listFormItems')
     .addItem('チェック済みの行をまとめて送信する', 'sendCheckedRows')
     .addToUi();
@@ -140,6 +145,33 @@ function ensureTrigger_() {
   if (already) return false;
   ScriptApp.newTrigger('onEditHandler').forSpreadsheet(SpreadsheetApp.getActive()).onEdit().create();
   return true;
+}
+
+/**
+ * 回答が流れ込むシートから、フォームの編集URLを引いて B4 に入れる。
+ *
+ * 編集用の ID（/forms/d/<id>/edit）は、回答用の URL（/forms/d/e/<id>/viewform）からは
+ * 導けない。一方、回答シートはフォームに紐づいているので getFormUrl() で編集URLが取れる。
+ * Drive を名前で探すより確実。
+ */
+function findFormIdFromResponseSheet() {
+  const book = SpreadsheetApp.openById(RESPONSE_BOOK_ID);
+  const sh = book.getSheetByName(RESPONSE_SHEET_NAME);
+  if (!sh) throw new Error('回答シート「' + RESPONSE_SHEET_NAME + '」が見つかりません（' + book.getName() + '）');
+  const url = sh.getFormUrl();
+  if (!url) {
+    throw new Error(
+      '回答シート「' + RESPONSE_SHEET_NAME + '」にフォームが紐づいていません。\n' +
+      'そのシートがフォームの回答先でないか、リンクが外れています。'
+    );
+  }
+  const id = resolveFormId_(url);
+  SpreadsheetApp.getActive().getSheetByName(SHEET_MAP).getRange(MAP_FORM_ID_CELL).setValue(id);
+  notify_(
+    'フォームの編集URLを取り出して ' + MAP_FORM_ID_CELL + ' に入れました。\n\n' +
+    url + '\n\n' +
+    '続けて「NGフォーム → 準備する（初回だけ）」を押してください。'
+  );
 }
 
 /**
