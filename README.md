@@ -49,6 +49,7 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
 | [`case-format.md`](./references/case-format.md) | テスト観点・ケースの書式（レイヤー / ブロック / ケース / 被覆表）|
 | [`drive-and-sheets.md`](./references/drive-and-sheets.md) | Drive のフォルダ構成、Sheets の読み書き手順と壊し方 |
 | [`evidence.md`](./references/evidence.md) | 証跡の命名規則と「代表証跡だけ置く」の考え方 |
+| [`ng-form.md`](./references/ng-form.md) | NG フォームへの投稿 — 中間ブックと Apps Script、フォーム 25 項目と選択肢 |
 | [`playwright-kpiee.md`](./references/playwright-kpiee.md) | kpiee で spec を書くときの落とし穴 |
 
 ## apps-script

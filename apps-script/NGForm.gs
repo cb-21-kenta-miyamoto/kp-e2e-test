@@ -34,10 +34,10 @@ const SHEET_MAP = 'フォーム項目';
 
 const NG_HEADER_ROW = 4;   // 見出し行
 const NG_FIRST_ROW = 5;    // データの開始行（5 行目は記入例）
-const COL_SEND = 17;       // Q 送信（チェックボックス）
-const COL_SENT_AT = 18;    // R 送信済み日時
-const COL_RESPONSE_ID = 19;// S フォーム回答ID
-const COL_ERROR = 20;      // T 送信エラー
+const COL_SEND = 22;       // V 送信（チェックボックス）
+const COL_SENT_AT = 23;    // W 送信済み日時
+const COL_RESPONSE_ID = 24;// X フォーム回答ID
+const COL_ERROR = 25;      // Y 送信エラー
 
 const MAP_FORM_ID_CELL = 'B4';       // 編集用のフォーム ID を入れる
 const MAP_TARGET_URL_CELL = 'B5';    // 投稿したいフォームの回答URL（照合用・任意）
@@ -353,6 +353,8 @@ function columnLetterToIndex_(letters) {
  */
 function hintFor_(item) {
   const t = String(item.getType());
+  if (t === 'PAGE_BREAK') return '※セクション区切り。回答を持てないので「対応する列」は空のままにする';
+  if (t === 'FILE_UPLOAD') return '★ファイル添付はスクリプトから送れません。証跡の URL は別のテキスト項目へ入れてください';
   try {
     if (t === 'MULTIPLE_CHOICE') return '選択肢: ' + choices_(item.asMultipleChoiceItem());
     if (t === 'LIST') return '選択肢: ' + choices_(item.asListItem());
@@ -361,12 +363,13 @@ function hintFor_(item) {
       const sc = item.asScaleItem();
       return '数値 ' + sc.getLowerBound() + '〜' + sc.getUpperBound();
     }
-    if (t === 'FILE_UPLOAD') {
-      return '★ファイル添付はスクリプトから送れません。証跡の URL は別のテキスト項目へ入れてください';
-    }
-  } catch (e) { /* 取れない型は空でよい */ }
+  } catch (e) {
+    // 握り潰すと「選択肢が空」の原因が分からなくなる。理由をセルに出す
+    return '選択肢を取得できませんでした: ' + (e && e.message ? e.message : e);
+  }
   return '';
 }
+
 
 function choices_(typed) {
   return typed.getChoices().map(function (c) { return c.getValue(); }).join(' / ');
