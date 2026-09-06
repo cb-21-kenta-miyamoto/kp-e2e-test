@@ -32,12 +32,41 @@
 const SHEET_NG = 'NG一覧';
 const SHEET_MAP = 'フォーム項目';
 
-const NG_HEADER_ROW = 4;   // 見出し行
+// 貼り替え忘れを検出するための版。diagnose() で表示する
+const SCRIPT_VERSION = '2026-09-06.2';
+
+const NG_HEADER_ROW = 4;   // 見出し行。列は名前で引くので、位置が動いても壊れない
 const NG_FIRST_ROW = 5;    // データの開始行（5 行目は記入例）
+// 列番号は「見出しが見つからなかったとき」のフォールバックにしか使わない。
+// 直接参照すると、列を組み替えたときに onEdit が黙って何もしなくなる（実際に踏んだ）
 const COL_SEND = 22;       // V 送信（チェックボックス）
 const COL_SENT_AT = 23;    // W 送信済み日時
 const COL_RESPONSE_ID = 24;// X フォーム回答ID
 const COL_ERROR = 25;      // Y 送信エラー
+
+/**
+ * NG一覧 のシステム列を「見出し名」で引く。
+ *
+ * 列番号をコードに焼くと、列を組み替えたときに onEditHandler の
+ * 「対象列か？」判定が外れ、エラーも出ないまま何も起きなくなる。
+ * 見出し名で引けば、列を動かしてもスクリプトを貼り直す必要がない。
+ */
+function ngCols_(sh) {
+  const width = Math.max(sh.getLastColumn(), COL_ERROR);
+  const hdr = sh.getRange(NG_HEADER_ROW, 1, 1, width).getValues()[0]
+    .map(function (v) { return String(v).trim(); });
+  function at(name, fallback) {
+    const i = hdr.indexOf(name);
+    return i >= 0 ? i + 1 : fallback;
+  }
+  return {
+    send: at('送信', COL_SEND),
+    sentAt: at('送信済み日時', COL_SENT_AT),
+    responseId: at('フォーム回答ID', COL_RESPONSE_ID),
+    error: at('送信エラー', COL_ERROR),
+    header: hdr,
+  };
+}
 
 const MAP_FORM_ID_CELL = 'B4';       // 編集用のフォーム ID を入れる
 const MAP_TARGET_URL_CELL = 'B5';    // 投稿したいフォームの回答URL（照合用・任意）
@@ -118,6 +147,8 @@ function onOpen() {
     .addItem('回答シートからフォームIDを取り出す', 'findFormIdFromResponseSheet')
     .addItem('フォームの項目を読み込み直す', 'listFormItems')
     .addItem('チェック済みの行をまとめて送信する', 'sendCheckedRows')
+    .addSeparator()
+    .addItem('送信できないとき — 状態を調べる', 'diagnose')
     .addToUi();
 }
 
@@ -145,6 +176,101 @@ function ensureTrigger_() {
   if (already) return false;
   ScriptApp.newTrigger('onEditHandler').forSpreadsheet(SpreadsheetApp.getActive()).onEdit().create();
   return true;
+}
+
+/**
+ * 送信できないときに、どこで止まっているかを一括で出す。
+ *
+ * 「チェックしたのに何も起きない」の原因はほぼ次の 3 つで、
+ * いずれも NG一覧 にエラーが出ないため、これを見ないと分からない。
+ *   1. スクリプトが古い（列番号が古いままで onEdit が対象列を見失う）
+ *   2. onEdit のインストール型トリガーが無い
+ *   3. 「対応する列」が空 or フォームIDが別物
+ */
+function diagnose() {
+  const ss = SpreadsheetApp.getActive();
+  const out = ['■ スクリプト版: ' + SCRIPT_VERSION];
+
+  const sh = ss.getSheetByName(SHEET_NG);
+  if (!sh) {
+    notify_('シート「' + SHEET_NG + '」が見つかりません');
+    return;
+  }
+  const col = ngCols_(sh);
+  out.push('');
+  out.push('■ 列の解決（見出し名から引いた結果）');
+  out.push('  送信: ' + colLetter_(col.send) + '列'
+    + (col.send === COL_SEND ? '' : '  ※定数 ' + colLetter_(COL_SEND) + ' とズレているが見出しを優先'));
+  out.push('  送信済み日時: ' + colLetter_(col.sentAt) + '列 / 回答ID: ' + colLetter_(col.responseId)
+    + '列 / エラー: ' + colLetter_(col.error) + '列');
+  if (col.header.indexOf('送信') < 0) {
+    out.push('  ⚠ 見出し行(' + NG_HEADER_ROW + '行目)に「送信」が無い。フォールバックで '
+      + colLetter_(COL_SEND) + '列を見ている');
+  }
+
+  const trigs = ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'onEditHandler'; });
+  out.push('');
+  out.push('■ トリガー');
+  out.push(trigs.length
+    ? '  onEditHandler が ' + trigs.length + ' 件入っています'
+    : '  ⚠ 無し。「準備する（初回だけ）」を押してください（メニューから手動送信は可能）');
+
+  out.push('');
+  out.push('■ フォーム');
+  let form = null;
+  try {
+    const map = ss.getSheetByName(SHEET_MAP);
+    const id = resolveFormId_(map.getRange(MAP_FORM_ID_CELL).getValue());
+    form = openForm_(id);
+    out.push('  ' + form.getTitle());
+    out.push('  項目 ' + form.getItems().length + ' 件 / ' + form.getPublishedUrl());
+    const want = String(map.getRange(MAP_TARGET_URL_CELL).getValue()).trim();
+    if (want && form.getPublishedUrl().indexOf(resolveFormId_(want)) < 0) {
+      out.push('  ⚠ ' + MAP_TARGET_URL_CELL + ' の投稿先と一致していません');
+    }
+  } catch (err) {
+    out.push('  ⚠ 開けません: ' + (err && err.message ? err.message : err));
+  }
+
+  out.push('');
+  out.push('■ マッピング');
+  const map = ss.getSheetByName(SHEET_MAP);
+  const last = map.getLastRow();
+  if (last < MAP_FIRST_ROW) {
+    out.push('  ⚠ フォーム項目が読み込まれていません');
+  } else {
+    const rows = map.getRange(MAP_FIRST_ROW, 1, last - MAP_FIRST_ROW + 1, 7).getValues();
+    const filled = rows.filter(function (r) { return String(r[5] || '').trim(); });
+    const missing = rows.filter(function (r) {
+      return r[3] === '必須' && !String(r[5] || '').trim() && String(r[2]) !== 'PAGE_BREAK';
+    }).map(function (r) { return r[1]; });
+    out.push('  ' + filled.length + ' / ' + rows.length + ' 項目に対応する列あり');
+    if (missing.length) out.push('  必須なのに未対応: ' + missing.join(' / '));
+  }
+
+  out.push('');
+  out.push('■ チェック済みで未送信の行');
+  const hits = [];
+  for (let r = NG_FIRST_ROW; r <= sh.getLastRow(); r++) {
+    if (sh.getRange(r, col.send).getValue() === true && !sh.getRange(r, col.sentAt).getValue()) {
+      hits.push(r + '行目 (' + sh.getRange(r, 1).getValue() + ')');
+    }
+  }
+  out.push(hits.length ? '  ' + hits.join(', ') : '  なし');
+  if (hits.length) out.push('  → 「チェック済みの行をまとめて送信する」で送れます');
+
+  notify_(out.join('\n'));
+}
+
+function colLetter_(n) {
+  let s = '';
+  while (n > 0) {
+    const m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = (n - 1 - m) / 26;
+  }
+  return s;
 }
 
 /**
@@ -241,21 +367,24 @@ function onEditHandler(e) {
   if (!e || !e.range) return;
   const sh = e.range.getSheet();
   if (sh.getName() !== SHEET_NG) return;
-  if (e.range.getColumn() !== COL_SEND) return;
+  const col = ngCols_(sh);
+  if (e.range.getColumn() !== col.send) return;
   const row = e.range.getRow();
   if (row < NG_FIRST_ROW) return;
   if (e.range.getValue() !== true) return;
   submitRow_(sh, row);
 }
 
+
 /** チェックが入っていて未送信の行をまとめて送る（トリガーを使わない場合の手動用）。 */
 function sendCheckedRows() {
   const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_NG);
   const last = sh.getLastRow();
   let n = 0;
+  const col = ngCols_(sh);
   for (let row = NG_FIRST_ROW; row <= last; row++) {
-    if (sh.getRange(row, COL_SEND).getValue() !== true) continue;
-    if (sh.getRange(row, COL_SENT_AT).getValue()) continue;
+    if (sh.getRange(row, col.send).getValue() !== true) continue;
+    if (sh.getRange(row, col.sentAt).getValue()) continue;
     if (submitRow_(sh, row)) n++;
   }
   notify_(n + ' 件を送信しました。');
@@ -268,8 +397,9 @@ function submitRow_(sh, row) {
   if (!lock.tryLock(30000)) return false;
   try {
     // 二重送信を防ぐ。ここを外すとトリガーの再実行で同じ NG が二重に登録される
-    if (sh.getRange(row, COL_SENT_AT).getValue()) {
-      sh.getRange(row, COL_ERROR).setValue('送信済みのためスキップしました');
+    const col = ngCols_(sh);
+    if (sh.getRange(row, col.sentAt).getValue()) {
+      sh.getRange(row, col.error).setValue('送信済みのためスキップしました');
       return false;
     }
     const ss = SpreadsheetApp.getActive();
@@ -316,13 +446,16 @@ function submitRow_(sh, row) {
     }
 
     const submitted = fr.submit();
-    sh.getRange(row, COL_SENT_AT).setValue(Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm'));
-    sh.getRange(row, COL_RESPONSE_ID).setValue(safeResponseId_(submitted));
-    sh.getRange(row, COL_ERROR).setValue(skipped.length ? '送信済み（スキップ: ' + skipped.join(' / ') + '）' : '');
+    sh.getRange(row, col.sentAt).setValue(Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm'));
+    sh.getRange(row, col.responseId).setValue(safeResponseId_(submitted));
+    sh.getRange(row, col.error).setValue(skipped.length ? '送信済み（スキップ: ' + skipped.join(' / ') + '）' : '');
     return true;
   } catch (err) {
-    sh.getRange(row, COL_ERROR).setValue(String(err && err.message ? err.message : err));
-    sh.getRange(row, COL_SEND).setValue(false);
+    // ここに来られない失敗（onEdit が発火しない等）は Y列も空のままになる。
+    // その切り分けは diagnose() でやる
+    const c = ngCols_(sh);
+    sh.getRange(row, c.error).setValue(String(err && err.message ? err.message : err));
+    sh.getRange(row, c.send).setValue(false);
     return false;
   } finally {
     lock.releaseLock();
@@ -336,7 +469,10 @@ function resolveValue_(spec, rowValues) {
   }
   if (/^[A-Za-z]{1,2}$/.test(spec)) {
     const idx = columnLetterToIndex_(spec.toUpperCase()) - 1;
-    return idx >= 0 && idx < rowValues.length ? rowValues[idx] : '';
+    const v = idx >= 0 && idx < rowValues.length ? rowValues[idx] : '';
+    // Date をそのまま String() すると "Sat Sep 06 2026 00:00:00 GMT+0900..." になる
+    if (v instanceof Date) return Utilities.formatDate(v, 'Asia/Tokyo', 'yyyy/MM/dd');
+    return v;
   }
   return spec; // それ以外はそのまま固定値として扱う
 }
