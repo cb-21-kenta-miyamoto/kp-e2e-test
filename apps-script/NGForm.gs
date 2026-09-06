@@ -160,9 +160,9 @@ function loadFormItems_() {
     });
   }
 
-  const rows = items.map((it, i) => {
+  const rows = items.map(function (it, i) {
     const id = String(it.getId());
-    return [i + 1, it.getTitle(), String(it.getType()), isRequired_(it) ? '必須' : '', id, prev[id] || '', ''];
+    return [i + 1, it.getTitle(), String(it.getType()), isRequired_(it) ? '必須' : '', id, prev[id] || '', hintFor_(it)];
   });
 
   if (last >= MAP_FIRST_ROW) map.getRange(MAP_FIRST_ROW, 1, last - MAP_FIRST_ROW + 1, 7).clearContent();
@@ -234,7 +234,12 @@ function submitRow_(sh, row) {
         return;
       }
       const ir = buildItemResponse_(item, value);
-      if (ir === null) { skipped.push('未対応のタイプ: ' + m[1] + ' (' + m[2] + ')'); return; }
+      if (ir === null) {
+        skipped.push(m[2] === 'FILE_UPLOAD'
+          ? 'ファイル添付は送れないのでスキップ: ' + m[1]
+          : '未対応のタイプ: ' + m[1] + ' (' + m[2] + ')');
+        return;
+      }
       fr = fr.withItemResponse(ir);
     });
 
@@ -276,6 +281,31 @@ function columnLetterToIndex_(letters) {
   return n;
 }
 
+/**
+ * 「選択肢・注意」列に出す文言。
+ * 選択式は選べる値をそのまま並べる。ここに無い値を送るとフォームに弾かれるため。
+ */
+function hintFor_(item) {
+  const t = String(item.getType());
+  try {
+    if (t === 'MULTIPLE_CHOICE') return '選択肢: ' + choices_(item.asMultipleChoiceItem());
+    if (t === 'LIST') return '選択肢: ' + choices_(item.asListItem());
+    if (t === 'CHECKBOX') return '選択肢（カンマ区切りで複数可）: ' + choices_(item.asCheckboxItem());
+    if (t === 'SCALE') {
+      const sc = item.asScaleItem();
+      return '数値 ' + sc.getLowerBound() + '〜' + sc.getUpperBound();
+    }
+    if (t === 'FILE_UPLOAD') {
+      return '★ファイル添付はスクリプトから送れません。証跡の URL は別のテキスト項目へ入れてください';
+    }
+  } catch (e) { /* 取れない型は空でよい */ }
+  return '';
+}
+
+function choices_(typed) {
+  return typed.getChoices().map(function (c) { return c.getValue(); }).join(' / ');
+}
+
 /** 項目の型に合わせて ItemResponse を作る。未対応なら null。 */
 function buildItemResponse_(item, value) {
   const t = String(item.getType());
@@ -287,6 +317,9 @@ function buildItemResponse_(item, value) {
     case 'LIST': return item.asListItem().createResponse(s);
     case 'CHECKBOX': return item.asCheckboxItem().createResponse(s.split(',').map(function (x) { return x.trim(); }).filter(String));
     case 'SCALE': return item.asScaleItem().createResponse(Number(s));
+    case 'FILE_UPLOAD':
+      // Apps Script からファイル添付の回答は作れない（Google の制約）
+      return null;
     case 'DATE': return item.asDateItem().createResponse(toDate_(value));
     case 'DATETIME': return item.asDateTimeItem().createResponse(toDate_(value));
     case 'TIME': {
