@@ -3,19 +3,25 @@
  *
  * 置き場所: 【NG管理】kpiee 動作確認・E2E の「拡張機能 → Apps Script」
  *
- * 初回のセットアップ:
+ * 初回のセットアップ（4 手順）:
  *   1. スプレッドシートで「拡張機能 → Apps Script」を開き、このファイルの中身を貼って保存（Ctrl/Cmd+S）
  *   2. スプレッドシートを開き直す → 上部に「NGフォーム」メニューが出る
  *   3. 「フォーム項目」タブの B4 に NG フォームの ID を貼る
- *      （編集URL https://docs.google.com/forms/d/<ここ>/edit の <ここ>）
- *   4. メニュー「NGフォーム → フォームの項目を読み込む」を実行
- *      初回は Google の承認画面が出る（「詳細」→「安全ではないページに移動」→ 許可）
- *   5. 「フォーム項目」タブの各行の「対応する列」に、NG一覧 の列記号（例 F）か
+ *      フォームを「編集モード」で開いたときの URL の <ここ>:
+ *        https://docs.google.com/forms/d/<ここ>/edit
+ *      ※ 回答用の /forms/d/e/1FAIpQLS.../viewform は別物で、使えない
+ *   4. メニュー「NGフォーム → 準備する（初回だけ）」を押す
+ *      → 承認画面が出る（「詳細」→「安全ではないページに移動」→ 許可）
+ *      → フォームの質問が「フォーム項目」タブに並び、送信トリガーも同時に入る
+ *   5. 「フォーム項目」タブの「対応する列」に、NG一覧 の列記号（例 F）か
  *      固定値（例 "E2E"）を書く
- *   6. メニュー「NGフォーム → 送信トリガーを入れる（初回のみ）」を実行
  *
- * トリガーを入れたくない場合は 6 を飛ばし、
- * 「NGフォーム → チェック済みの行を送信する」を都度実行すればよい。
+ * 以降は NG一覧 の「送信」にチェックを入れるだけで投稿される。
+ *
+ * なぜ 4 の一手間が要るか:
+ *   チェックだけで動く「簡易トリガー」は Google の仕様で外部サービス（フォーム）を
+ *   触れない。フォームへ投稿するには一度ユーザーの承認が要るため、
+ *   その承認と、承認が要るトリガーの設置を 4 に畳んでいる。
  *
  * 決めごと:
  *   - AI はフォームへ投稿しない。NG一覧 に行を書くところまで。送信の判断は人が持つ
@@ -37,6 +43,55 @@ const MAP_FORM_ID_CELL = 'B4';
 const MAP_HEADER_ROW = 6;  // フォーム項目の見出し行
 const MAP_FIRST_ROW = 7;
 
+/**
+ * B4 の入力から、FormApp が使えるフォーム ID を取り出す。
+ * URL を丸ごと貼っても ID だけ貼っても通す。
+ *
+ * よくある間違いは「公開用（回答用）の ID」を貼ること。
+ *   使えない: https://docs.google.com/forms/d/e/1FAIpQLSd.../viewform  ← /d/e/ の方
+ *   使える  : https://docs.google.com/forms/d/1AbC.../edit              ← /d/ の方
+ * 公開用 ID は FormApp.openById では開けないので、その場で分かるように弾く。
+ */
+function resolveFormId_(raw) {
+  const v = String(raw == null ? '' : raw).trim();
+  if (!v) {
+    throw new Error(
+      '「フォーム項目」タブの ' + MAP_FORM_ID_CELL + ' が空です。\n' +
+      'フォームを編集モードで開いたときの URL\n' +
+      '  https://docs.google.com/forms/d/<ここ>/edit\n' +
+      'の <ここ> を貼ってください（URL を丸ごと貼っても構いません）。'
+    );
+  }
+  // 公開用（回答用）の URL / ID を弾く
+  if (v.indexOf('/forms/d/e/') !== -1 || v.indexOf('1FAIpQLS') === 0) {
+    throw new Error(
+      'これは「公開用（回答用）の ID」です。フォームへの投稿には使えません。\n\n' +
+      '正しい取り方:\n' +
+      '  1. フォームを編集モードで開く（Google フォームの一覧、または Drive から開く）\n' +
+      '  2. アドレスバーの https://docs.google.com/forms/d/<ここ>/edit の <ここ> をコピー\n' +
+      '  3. ' + MAP_FORM_ID_CELL + ' に貼り直す\n\n' +
+      '※ /forms/d/e/1FAIpQLS.../viewform は回答用の URL で、別物です。'
+    );
+  }
+  const m = v.match(/\/forms\/d\/([a-zA-Z0-9_-]+)/);
+  return m ? m[1] : v;
+}
+
+/** 開けなかったときに、原因が分かるメッセージへ言い換える。 */
+function openForm_(formId) {
+  try {
+    return FormApp.openById(formId);
+  } catch (e) {
+    throw new Error(
+      'フォームを開けませんでした（ID: ' + formId + '）。\n\n' +
+      '考えられる原因は 2 つです。\n' +
+      '  1. ID が「公開用（回答用）」のもの → 編集 URL /forms/d/<ここ>/edit の <ここ> を使う\n' +
+      '  2. このフォームの編集権限が無い → フォームの持ち主に編集者として追加してもらう\n\n' +
+      '（Google からの元のメッセージ: ' + (e && e.message ? e.message : e) + '）'
+    );
+  }
+}
+
 /** 画面に出せれば出し、出せなければ実行ログへ。エディタから実行しても落ちないようにする。 */
 function notify_(message) {
   Logger.log(message);
@@ -51,34 +106,49 @@ function notify_(message) {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('NGフォーム')
-    .addItem('フォームの項目を読み込む', 'listFormItems')
-    .addItem('チェック済みの行を送信する', 'sendCheckedRows')
+    .addItem('準備する（初回だけ）', 'prepare')
     .addSeparator()
-    .addItem('送信トリガーを入れる（初回のみ）', 'setup')
+    .addItem('フォームの項目を読み込み直す', 'listFormItems')
+    .addItem('チェック済みの行をまとめて送信する', 'sendCheckedRows')
     .addToUi();
 }
 
-/** 送信チェックで発火するトリガーを入れる。二重登録はしない。 */
-function setup() {
-  const ss = SpreadsheetApp.getActive();
-  const already = ScriptApp.getProjectTriggers()
-    .some((t) => t.getHandlerFunction() === 'onEditHandler');
-  if (already) {
-    notify_('送信トリガーは既に入っています。追加しませんでした。');
-    return;
-  }
-  ScriptApp.newTrigger('onEditHandler').forSpreadsheet(ss).onEdit().create();
-  notify_('送信トリガーを入れました。NG一覧 の「送信」にチェックすると投稿します。');
+/**
+ * 初回にこれだけ押せばよい。
+ * フォームの質問を読み込み、送信トリガーを入れるところまでを 1 回でやる。
+ */
+function prepare() {
+  const n = loadFormItems_();
+  const added = ensureTrigger_();
+  notify_(
+    'フォームの項目を ' + n + ' 件読み込みました。\n' +
+    (added ? '送信トリガーも入れました。' : '送信トリガーは既に入っていました。') + '\n\n' +
+    '「フォーム項目」タブの「対応する列」を埋めれば準備完了です。\n' +
+    'あとは NG一覧 の「送信」にチェックを入れるだけで投稿されます。'
+  );
 }
 
-/** フォームの質問を「フォーム項目」タブへ書き出す。対応する列は既存の入力を保つ。 */
+/** 送信チェックで発火するトリガーを入れる。二重登録はしない。入れたら true。 */
+function ensureTrigger_() {
+  const already = ScriptApp.getProjectTriggers()
+    .some(function (t) { return t.getHandlerFunction() === 'onEditHandler'; });
+  if (already) return false;
+  ScriptApp.newTrigger('onEditHandler').forSpreadsheet(SpreadsheetApp.getActive()).onEdit().create();
+  return true;
+}
+
+/** 項目だけ読み込み直す（フォームの質問が増えたとき）。 */
 function listFormItems() {
+  const n = loadFormItems_();
+  notify_('フォームの項目を ' + n + ' 件読み込み直しました。「対応する列」は残してあります。');
+}
+
+/** フォームの質問を「フォーム項目」タブへ書き出す。対応する列は既存の入力を保つ。件数を返す。 */
+function loadFormItems_() {
   const ss = SpreadsheetApp.getActive();
   const map = ss.getSheetByName(SHEET_MAP);
-  const formId = String(map.getRange(MAP_FORM_ID_CELL).getValue()).trim();
-  if (!formId) throw new Error(SHEET_MAP + ' の ' + MAP_FORM_ID_CELL + ' にフォームの ID を入れてください。');
-
-  const form = FormApp.openById(formId);
+  const formId = resolveFormId_(map.getRange(MAP_FORM_ID_CELL).getValue());
+  const form = openForm_(formId);
   const items = form.getItems();
 
   // 既存のマッピング（itemId -> 対応する列）を拾っておく
@@ -97,11 +167,7 @@ function listFormItems() {
 
   if (last >= MAP_FIRST_ROW) map.getRange(MAP_FIRST_ROW, 1, last - MAP_FIRST_ROW + 1, 7).clearContent();
   if (rows.length) map.getRange(MAP_FIRST_ROW, 1, rows.length, 7).setValues(rows);
-
-  notify_(
-    'フォーム「' + form.getTitle() + '」の項目を ' + rows.length + ' 件読み込みました。\n' +
-    '各行の「対応する列」に NG一覧 の列記号（例 F）か固定値（例 "E2E"）を入れてください。'
-  );
+  return rows.length;
 }
 
 /** 「送信」列にチェックが入ったら投稿する。 */
@@ -142,15 +208,13 @@ function submitRow_(sh, row) {
     }
     const ss = SpreadsheetApp.getActive();
     const map = ss.getSheetByName(SHEET_MAP);
-    const formId = String(map.getRange(MAP_FORM_ID_CELL).getValue()).trim();
-    if (!formId) throw new Error(SHEET_MAP + ' の ' + MAP_FORM_ID_CELL + ' にフォームの ID がありません');
-
-    const form = FormApp.openById(formId);
+    const formId = resolveFormId_(map.getRange(MAP_FORM_ID_CELL).getValue());
+    const form = openForm_(formId);
     const itemsById = {};
     form.getItems().forEach((it) => { itemsById[String(it.getId())] = it; });
 
     const mapLast = map.getLastRow();
-    if (mapLast < MAP_FIRST_ROW) throw new Error('フォーム項目が読み込まれていません。listFormItems を実行してください');
+    if (mapLast < MAP_FIRST_ROW) throw new Error('フォーム項目が読み込まれていません。メニュー「NGフォーム → 準備する（初回だけ）」を押してください');
     const mapping = map.getRange(MAP_FIRST_ROW, 1, mapLast - MAP_FIRST_ROW + 1, 7).getValues();
 
     const rowValues = sh.getRange(row, 1, 1, sh.getLastColumn()).getValues()[0];
