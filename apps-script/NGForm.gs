@@ -3,13 +3,19 @@
  *
  * 置き場所: 【NG管理】kpiee 動作確認・E2E の「拡張機能 → Apps Script」
  *
- * 使い方:
- *   1. このファイルの中身を貼って保存する
- *   2. 「フォーム項目」タブの B4 に NG フォームの ID を貼る
- *      （編集URL https://docs.google.com/forms/d/<ここ>/edit）
- *   3. listFormItems を実行して承認する → 「フォーム項目」タブに質問が並ぶ
- *   4. 各項目の「対応する列」に NG一覧 の列記号（例 F）か固定値（例 "E2E"）を書く
- *   5. setup を実行する → 「送信」チェックで発火するトリガーが入る
+ * 初回のセットアップ:
+ *   1. スプレッドシートで「拡張機能 → Apps Script」を開き、このファイルの中身を貼って保存（Ctrl/Cmd+S）
+ *   2. スプレッドシートを開き直す → 上部に「NGフォーム」メニューが出る
+ *   3. 「フォーム項目」タブの B4 に NG フォームの ID を貼る
+ *      （編集URL https://docs.google.com/forms/d/<ここ>/edit の <ここ>）
+ *   4. メニュー「NGフォーム → フォームの項目を読み込む」を実行
+ *      初回は Google の承認画面が出る（「詳細」→「安全ではないページに移動」→ 許可）
+ *   5. 「フォーム項目」タブの各行の「対応する列」に、NG一覧 の列記号（例 F）か
+ *      固定値（例 "E2E"）を書く
+ *   6. メニュー「NGフォーム → 送信トリガーを入れる（初回のみ）」を実行
+ *
+ * トリガーを入れたくない場合は 6 を飛ばし、
+ * 「NGフォーム → チェック済みの行を送信する」を都度実行すればよい。
  *
  * 決めごと:
  *   - AI はフォームへ投稿しない。NG一覧 に行を書くところまで。送信の判断は人が持つ
@@ -31,6 +37,16 @@ const MAP_FORM_ID_CELL = 'B4';
 const MAP_HEADER_ROW = 6;  // フォーム項目の見出し行
 const MAP_FIRST_ROW = 7;
 
+/** 画面に出せれば出し、出せなければ実行ログへ。エディタから実行しても落ちないようにする。 */
+function notify_(message) {
+  Logger.log(message);
+  try {
+    SpreadsheetApp.getUi().alert(message);
+  } catch (e) {
+    // エディタから実行したときは UI が無い。ログだけ残す
+  }
+}
+
 // ---- メニュー ----
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -48,11 +64,11 @@ function setup() {
   const already = ScriptApp.getProjectTriggers()
     .some((t) => t.getHandlerFunction() === 'onEditHandler');
   if (already) {
-    SpreadsheetApp.getUi().alert('トリガーは既に入っています。');
+    notify_('送信トリガーは既に入っています。追加しませんでした。');
     return;
   }
   ScriptApp.newTrigger('onEditHandler').forSpreadsheet(ss).onEdit().create();
-  SpreadsheetApp.getUi().alert('送信トリガーを入れました。「送信」にチェックすると投稿します。');
+  notify_('送信トリガーを入れました。NG一覧 の「送信」にチェックすると投稿します。');
 }
 
 /** フォームの質問を「フォーム項目」タブへ書き出す。対応する列は既存の入力を保つ。 */
@@ -82,7 +98,7 @@ function listFormItems() {
   if (last >= MAP_FIRST_ROW) map.getRange(MAP_FIRST_ROW, 1, last - MAP_FIRST_ROW + 1, 7).clearContent();
   if (rows.length) map.getRange(MAP_FIRST_ROW, 1, rows.length, 7).setValues(rows);
 
-  SpreadsheetApp.getUi().alert(
+  notify_(
     'フォーム「' + form.getTitle() + '」の項目を ' + rows.length + ' 件読み込みました。\n' +
     '各行の「対応する列」に NG一覧 の列記号（例 F）か固定値（例 "E2E"）を入れてください。'
   );
@@ -110,7 +126,7 @@ function sendCheckedRows() {
     if (sh.getRange(row, COL_SENT_AT).getValue()) continue;
     if (submitRow_(sh, row)) n++;
   }
-  SpreadsheetApp.getUi().alert(n + ' 件を送信しました。');
+  notify_(n + ' 件を送信しました。');
 }
 
 // ---- 以下は内部処理 ----
