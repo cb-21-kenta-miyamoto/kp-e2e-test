@@ -51,6 +51,12 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
 | [`evidence.md`](./references/evidence.md) | 証跡の命名規則と「代表証跡だけ置く」の考え方 |
 | [`playwright-kpiee.md`](./references/playwright-kpiee.md) | kpiee で spec を書くときの落とし穴 |
 
+## apps-script
+
+| ファイル | 中身 |
+| --- | --- |
+| [`NGForm.gs`](./apps-script/NGForm.gs) | 【NG管理】ブックから NG フォームへ投稿する Apps Script。AI がシートに行を書き、人がチェックすると投稿される |
+
 ## 実績
 
 | 改修 | ケース | 状態 |
