@@ -39,7 +39,10 @@ const COL_SENT_AT = 18;    // R 送信済み日時
 const COL_RESPONSE_ID = 19;// S フォーム回答ID
 const COL_ERROR = 20;      // T 送信エラー
 
-const MAP_FORM_ID_CELL = 'B4';
+const MAP_FORM_ID_CELL = 'B4';       // 編集用のフォーム ID を入れる
+const MAP_TARGET_URL_CELL = 'B5';    // 投稿したいフォームの回答URL（照合用・任意）
+const MAP_ACTUAL_URL_CELL = 'B5';    // 実際の回答URLを書き戻す先（B5 の隣 C5 に出す）
+const MAP_ACTUAL_URL_OUT = 'C5';
 const MAP_HEADER_ROW = 6;  // フォーム項目の見出し行
 const MAP_FIRST_ROW = 7;
 
@@ -119,8 +122,10 @@ function onOpen() {
  */
 function prepare() {
   const n = loadFormItems_();
+  const warn = verifyTarget_();
   const added = ensureTrigger_();
   notify_(
+    (warn ? '⚠ ' + warn + '\n\n' : '') +
     'フォームの項目を ' + n + ' 件読み込みました。\n' +
     (added ? '送信トリガーも入れました。' : '送信トリガーは既に入っていました。') + '\n\n' +
     '「フォーム項目」タブの「対応する列」を埋めれば準備完了です。\n' +
@@ -135,6 +140,35 @@ function ensureTrigger_() {
   if (already) return false;
   ScriptApp.newTrigger('onEditHandler').forSpreadsheet(SpreadsheetApp.getActive()).onEdit().create();
   return true;
+}
+
+/**
+ * B4 のフォームが、本当に投稿したいフォームかを照合する。
+ *
+ * B5 に「投稿先の回答URL」（/forms/d/e/.../viewform）を貼っておくと、
+ * B4 のフォームの実際の回答URLと突き合わせて、違っていたら警告を返す。
+ * 編集用の ID と回答用の URL は見た目が全く違うので、目視では照合できない。
+ */
+function verifyTarget_() {
+  const map = SpreadsheetApp.getActive().getSheetByName(SHEET_MAP);
+  const form = openForm_(resolveFormId_(map.getRange(MAP_FORM_ID_CELL).getValue()));
+  let actual = '';
+  try { actual = form.getPublishedUrl(); } catch (e) { actual = '(取得できず)'; }
+  map.getRange(MAP_ACTUAL_URL_OUT).setValue(actual);
+
+  const target = String(map.getRange(MAP_TARGET_URL_CELL).getValue() || '').trim();
+  if (!target) return '';
+  const idOf = function (u) {
+    const m = String(u).match(/\/forms\/d\/e\/([a-zA-Z0-9_-]+)/);
+    return m ? m[1] : '';
+  };
+  const a = idOf(actual), b = idOf(target);
+  if (!a || !b) return '';
+  if (a === b) return '';
+  return 'B4 のフォームは、B5 に書いた投稿先とは別のフォームです。\n' +
+         '  B4 の回答URL: ' + actual + '\n' +
+         '  B5 の投稿先  : ' + target + '\n' +
+         'B4 の ID を差し替えてください。';
 }
 
 /** 項目だけ読み込み直す（フォームの質問が増えたとき）。 */
