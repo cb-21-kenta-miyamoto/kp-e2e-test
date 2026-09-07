@@ -33,7 +33,7 @@ const SHEET_NG = 'NG一覧';
 const SHEET_MAP = 'フォーム項目';
 
 // 貼り替え忘れを検出するための版。diagnose() で表示する
-const SCRIPT_VERSION = '2026-09-06.3';
+const SCRIPT_VERSION = '2026-09-07.1';
 
 const NG_HEADER_ROW = 4;   // 見出し行。列は名前で引くので、位置が動いても壊れない
 const NG_FIRST_ROW = 5;    // データの開始行（5 行目は記入例）
@@ -146,6 +146,7 @@ function onOpen() {
     .addSeparator()
     .addItem('回答シートからフォームIDを取り出す', 'findFormIdFromResponseSheet')
     .addItem('フォームの項目を読み込み直す', 'listFormItems')
+    .addItem('選択肢をドロップダウンに反映する', 'syncChoiceValidation')
     .addItem('チェック済みの行を検証する（送信しない）', 'dryRunCheckedRows')
     .addItem('チェック済みの行をまとめて送信する', 'sendCheckedRows')
     .addSeparator()
@@ -161,10 +162,17 @@ function prepare() {
   const n = loadFormItems_();
   const warn = verifyTarget_();
   const added = ensureTrigger_();
+  let dd = '';
+  try {
+    syncChoiceValidation();
+    dd = '選択肢をドロップダウンに反映しました。\n';
+  } catch (e) {
+    dd = '⚠ ドロップダウンの反映に失敗: ' + (e && e.message ? e.message : e) + '\n';
+  }
   notify_(
     (warn ? '⚠ ' + warn + '\n\n' : '') +
     'フォームの項目を ' + n + ' 件読み込みました。\n' +
-    (added ? '送信トリガーも入れました。' : '送信トリガーは既に入っていました。') + '\n\n' +
+    (added ? '送信トリガーも入れました。' : '送信トリガーは既に入っていました。') + '\n' + dd + '\n' +
     '「フォーム項目」タブの「対応する列」を埋めれば準備完了です。\n' +
     'あとは NG一覧 の「送信」にチェックを入れるだけで投稿されます。'
   );
@@ -419,6 +427,56 @@ function sendCheckedRows() {
 }
 
 // ---- 以下は内部処理 ----
+
+/**
+ * フォームの選択肢を、NG一覧 のドロップダウンに反映する。
+ *
+ * 選択肢違反は「送る前に弾く」より「そもそも打てない」ほうが確実。
+ * フォーム側の選択肢は増減する（かつて ITテスト があったが今は無い）ので、
+ * 「フォームの項目を読み込み直す」のあとにこれを走らせて追随させる。
+ */
+function syncChoiceValidation() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(SHEET_NG);
+  const map = ss.getSheetByName(SHEET_MAP);
+  const last = map.getLastRow();
+  if (last < MAP_FIRST_ROW) throw new Error('フォーム項目が読み込まれていません');
+
+  const formId = resolveFormId_(map.getRange(MAP_FORM_ID_CELL).getValue());
+  const form = openForm_(formId);
+  const itemsById = {};
+  form.getItems().forEach(function (it) { itemsById[String(it.getId())] = it; });
+
+  const rows = map.getRange(MAP_FIRST_ROW, 1, last - MAP_FIRST_ROW + 1, 7).getValues();
+  const done = [];
+  const skipped = [];
+  rows.forEach(function (m) {
+    const item = itemsById[String(m[4] || '').trim()];
+    const spec = String(m[5] == null ? '' : m[5]).trim();
+    if (!item) return;
+    const allowed = choiceList_(item);
+    if (!allowed || !allowed.length) return;
+    // 列参照のときだけ。固定値の項目に入力規則は要らない
+    if (!/^[A-Za-z]{1,2}$/.test(spec)) {
+      if (spec) skipped.push(m[1] + '（固定値）');
+      return;
+    }
+    const ci = columnLetterToIndex_(spec.toUpperCase());
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(allowed, true)
+      // 複数選択とその他ありは、選択肢外の入力を許す必要がある
+      .setAllowInvalid(String(m[2]) === 'CHECKBOX' || hasOther_(item))
+      .setHelpText(m[1] + '（フォームの選択肢と完全一致が必要）')
+      .build();
+    sh.getRange(NG_FIRST_ROW, ci, sh.getMaxRows() - NG_FIRST_ROW + 1, 1).setDataValidation(rule);
+    done.push(spec.toUpperCase() + '列 ← ' + m[1] + '（' + allowed.length + ' 択）');
+  });
+
+  notify_(
+    'ドロップダウンを更新しました。\n\n' + done.join('\n') +
+    (skipped.length ? '\n\n固定値のため対象外: ' + skipped.join(' / ') : '')
+  );
+}
 
 /**
  * チェック済みの行を、送信せずに検証だけする。
