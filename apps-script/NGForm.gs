@@ -82,11 +82,16 @@ function loadForm() {
 
   const rows = [];
   const dropped = [];
+  let section = '';
   items.forEach(function (it, i) {
     const id = String(it.getId());
     const meta = itemMeta_(it);
     const keep = prev[id] || ['', ''];
-    rows.push([i + 1, it.getTitle(), meta.type, meta.required ? '必須' : '', id, keep[0], keep[1], meta.hint]);
+    if (meta.type === 'PAGE_BREAK') section = it.getTitle();
+    // どのページ配下かを出す。分岐先ページの「必須」は、そのページに
+    // 入らない回答では埋める必要が無いため、目で見て分かるようにしておく
+    const hint = (section && meta.type !== 'PAGE_BREAK' ? '［' + section + 'ページ］ ' : '') + meta.hint;
+    rows.push([i + 1, it.getTitle(), meta.type, meta.required ? '必須' : '', id, keep[0], keep[1], hint]);
 
     // 選択肢をそのままドロップダウンにする。選択肢違反は
     // 「送る前に弾く」より「そもそも打てない」ほうが確実
@@ -294,25 +299,52 @@ function mapRows_() {
 function buildResponse_(form, mapping, sh, row) {
   const itemsById = {};
   form.getItems().forEach(function (it) { itemsById[String(it.getId())] = it; });
-
   const values = rowValues_(sh, row);
-  let fr = form.createResponse();
-  const fatals = [], skipped = [];
-  let count = 0;
 
+  // ---- 1 段目: 全項目の値を出し、セクションごとに使われているかを見る ----
+  //
+  // ★フォームはデバイスの回答でページが分岐する。分岐先のページの項目は
+  // 「必須」でも、そのページに入らない回答では埋める必要が無い。
+  // 実際、PC 起票 1433 件のうち 1431 件はモバイル系が 4 項目とも空だった。
+  // 必須フラグだけを見ると、送れるはずの行を止めてしまう。
+  //
+  // そこで「そのセクションに 1 つも値が無ければ、セクションごと使わない」と判断する。
+  // 逆に 1 つでも埋まっていれば、同じセクションの必須の空は本当の不備として止める。
+  const plan = [];
+  const used = { '': true };      // 最初のページは常に使う
+  let section = '';
   mapping.forEach(function (m) {
+    if (String(m[2]) === 'PAGE_BREAK') { section = String(m[1] || ''); return; }
     const itemId = String(m[4] || '').trim();
     const colSpec = String(m[5] == null ? '' : m[5]).trim();
     const fixed = String(m[6] == null ? '' : m[6]).trim();
     if (!itemId || (!colSpec && !fixed)) return;
+    const value = valueFor_(colSpec, fixed, values);
+    if (value !== '') used[section] = true;
+    plan.push({
+      m: m, section: section, value: value,
+      where: colSpec ? colSpec.toUpperCase() + '列' : '固定値 ' + fixed,
+    });
+  });
 
-    const item = itemsById[itemId];
+  // ---- 2 段目: 回答を組み立てる ----
+  let fr = form.createResponse();
+  const fatals = [], skipped = [];
+  let count = 0;
+
+  plan.forEach(function (p) {
+    const m = p.m;
+    const item = itemsById[String(m[4]).trim()];
     if (!item) { skipped.push('項目が見つからない: ' + m[1]); return; }
 
-    const where = colSpec ? colSpec.toUpperCase() + '列' : '固定値 ' + fixed;
-    let value = valueFor_(colSpec, fixed, values);
+    let value = p.value;
     if (value === '') {
-      if (m[3] === '必須') fatals.push('必須なのに空: 「' + m[1] + '」← ' + where);
+      if (m[3] !== '必須') return;
+      if (used[p.section]) {
+        fatals.push('必須なのに空: 「' + m[1] + '」← ' + p.where);
+      } else {
+        skipped.push('セクション「' + p.section + '」は未使用: ' + m[1]);
+      }
       return;
     }
 
@@ -325,13 +357,13 @@ function buildResponse_(form, mapping, sh, row) {
         ? value.split(',').map(function (x) { return x.trim(); }).filter(String)
         : [value];
       const hits = [], bad = [];
-      parts.forEach(function (p) {
-        const hit = matchChoice_(meta.choices, p);
-        if (hit === null) bad.push(p); else hits.push(hit);
+      parts.forEach(function (q) {
+        const hit = matchChoice_(meta.choices, q);
+        if (hit === null) bad.push(q); else hits.push(hit);
       });
       if (bad.length) {
         fatals.push('選択肢に無い値です: 「' + m[1] + '」に "' + bad.join('", "') + '" を送ろうとしました（'
-          + where + '）\n      選択できるのは: ' + meta.choices.join(' / '));
+          + p.where + '）\n      選択できるのは: ' + meta.choices.join(' / '));
         return;
       }
       value = hits.join(', ');
@@ -342,7 +374,7 @@ function buildResponse_(form, mapping, sh, row) {
       ir = responseFor_(item, value);
     } catch (err) {
       fatals.push('値を回答に変換できません: 「' + m[1] + '」(' + meta.type + ') に "' + value + '" ← '
-        + where + '\n      ' + (err && err.message ? err.message : err));
+        + p.where + '\n      ' + (err && err.message ? err.message : err));
       return;
     }
     if (ir === null) {
