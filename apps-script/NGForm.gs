@@ -33,7 +33,7 @@ const SHEET_NG = 'NG一覧';
 const SHEET_MAP = 'フォーム項目';
 
 // 貼り替え忘れを検出するための版。diagnose() で表示する
-const SCRIPT_VERSION = '2026-09-06.2';
+const SCRIPT_VERSION = '2026-09-06.3';
 
 const NG_HEADER_ROW = 4;   // 見出し行。列は名前で引くので、位置が動いても壊れない
 const NG_FIRST_ROW = 5;    // データの開始行（5 行目は記入例）
@@ -146,6 +146,7 @@ function onOpen() {
     .addSeparator()
     .addItem('回答シートからフォームIDを取り出す', 'findFormIdFromResponseSheet')
     .addItem('フォームの項目を読み込み直す', 'listFormItems')
+    .addItem('チェック済みの行を検証する（送信しない）', 'dryRunCheckedRows')
     .addItem('チェック済みの行をまとめて送信する', 'sendCheckedRows')
     .addSeparator()
     .addItem('送信できないとき — 状態を調べる', 'diagnose')
@@ -250,6 +251,19 @@ function diagnose() {
   }
 
   out.push('');
+  out.push('■ 選択式項目の選択肢（フォームの実物）');
+  if (form) {
+    form.getItems().forEach(function (it) {
+      const cs = choiceList_(it);
+      if (!cs || !cs.length) return;
+      out.push('  ' + it.getTitle() + (hasOther_(it) ? '［その他あり］' : '') + ':');
+      out.push('    ' + cs.map(quote_).join(' / '));
+    });
+  } else {
+    out.push('  ⚠ フォームが開けないため取得できません');
+  }
+
+  out.push('');
   out.push('■ チェック済みで未送信の行');
   const hits = [];
   for (let r = NG_FIRST_ROW; r <= sh.getLastRow(); r++) {
@@ -261,6 +275,20 @@ function diagnose() {
   if (hits.length) out.push('  → 「チェック済みの行をまとめて送信する」で送れます');
 
   notify_(out.join('\n'));
+}
+
+function quote_(v) { return '"' + String(v) + '"'; }
+
+/**
+ * 「対応する列」の指定を、人が読める形にする。
+ * どのセルを見に行った結果その値になったのかが分からないと直せない
+ */
+function describeSpec_(spec) {
+  if (spec.length >= 2 && spec.charAt(0) === '"' && spec.charAt(spec.length - 1) === '"') {
+    return '固定値 ' + spec;
+  }
+  if (/^[A-Za-z]{1,2}$/.test(spec)) return spec.toUpperCase() + '列';
+  return '固定値 ' + quote_(spec);
 }
 
 function colLetter_(n) {
@@ -392,13 +420,34 @@ function sendCheckedRows() {
 
 // ---- 以下は内部処理 ----
 
-function submitRow_(sh, row) {
+/**
+ * チェック済みの行を、送信せずに検証だけする。
+ *
+ * 選択肢違反や必須の空は送信を止めるだけで、原因は「送信エラー」列に出る。
+ * 実際に投稿するとフォーム側に取り消せない回答が残るので、まずこれで確かめる。
+ */
+function dryRunCheckedRows() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_NG);
+  const col = ngCols_(sh);
+  let ok = 0, ng = 0, n = 0;
+  for (let row = NG_FIRST_ROW; row <= sh.getLastRow(); row++) {
+    if (sh.getRange(row, col.send).getValue() !== true) continue;
+    n++;
+    if (submitRow_(sh, row, true)) ok++; else ng++;
+  }
+  notify_(n === 0
+    ? '『送信』にチェックが入った行がありません。'
+    : n + ' 行を検証しました。送信できる ' + ok + ' / 問題あり ' + ng +
+      '\n\n結果は「送信エラー」列に出ています。問題がなければ「チェック済みの行をまとめて送信する」で投稿してください。');
+}
+
+function submitRow_(sh, row, dryRun) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return false;
   try {
     // 二重送信を防ぐ。ここを外すとトリガーの再実行で同じ NG が二重に登録される
     const col = ngCols_(sh);
-    if (sh.getRange(row, col.sentAt).getValue()) {
+    if (!dryRun && sh.getRange(row, col.sentAt).getValue()) {
       sh.getRange(row, col.error).setValue('送信済みのためスキップしました');
       return false;
     }
@@ -416,7 +465,9 @@ function submitRow_(sh, row) {
     const rowValues = sh.getRange(row, 1, 1, sh.getLastColumn()).getValues()[0];
 
     let fr = form.createResponse();
-    const skipped = [];
+    const skipped = [];  // 送れないが致命的でないもの
+    const fatals = [];   // これがあると送信しない
+    let built = 0;
     mapping.forEach((m) => {
       const itemId = String(m[4] || '').trim();
       const spec = String(m[5] == null ? '' : m[5]).trim();
@@ -424,12 +475,47 @@ function submitRow_(sh, row) {
       const item = itemsById[itemId];
       if (!item) { skipped.push('項目が見つからない: ' + m[1]); return; }
 
-      const value = resolveValue_(spec, rowValues);
+      let value = resolveValue_(spec, rowValues);
       if (value === '' || value === null || value === undefined) {
-        if (m[3] === '必須') skipped.push('必須なのに空: ' + m[1]);
+        if (m[3] === '必須') fatals.push('必須なのに空: 「' + m[1] + '」← ' + describeSpec_(spec));
         return;
       }
-      const ir = buildItemResponse_(item, value);
+
+      // 選択式は、送る前に選択肢と突き合わせる。
+      // createResponse に任せると「アイテムに無効な回答が送信されました: IT」しか出ず、
+      // どの項目か・何なら通るのかが分からない
+      const allowed = choiceList_(item);
+      if (allowed && allowed.length && !hasOther_(item)) {
+        const parts = String(m[2]) === 'CHECKBOX'
+          ? String(value).split(',').map(function (x) { return x.trim(); }).filter(String)
+          : [value];
+        const fixed = [];
+        const bad = [];
+        parts.forEach(function (pv) {
+          const hit = matchChoice_(allowed, pv);
+          if (hit === null) bad.push(pv); else fixed.push(hit);
+        });
+        if (bad.length) {
+          fatals.push(
+            '選択肢に無い値です: 「' + m[1] + '」に ' + bad.map(quote_).join(', ') +
+            ' を送ろうとしました（' + describeSpec_(spec) + '）\n' +
+            '    選択できるのは: ' + allowed.map(quote_).join(' / ')
+          );
+          return;
+        }
+        value = fixed.join(', ');
+      }
+
+      let ir = null;
+      try {
+        ir = buildItemResponse_(item, value);
+      } catch (err) {
+        // ここに来るのは型変換の失敗（日付が読めない等）。項目名と値を添えて返す
+        fatals.push('値を回答に変換できません: 「' + m[1] + '」(' + m[2] + ') に ' +
+          quote_(value) + ' ← ' + describeSpec_(spec) + '\n' +
+          '    ' + (err && err.message ? err.message : err));
+        return;
+      }
       if (ir === null) {
         skipped.push(m[2] === 'FILE_UPLOAD'
           ? 'ファイル添付は送れないのでスキップ: ' + m[1]
@@ -437,12 +523,20 @@ function submitRow_(sh, row) {
         return;
       }
       fr = fr.withItemResponse(ir);
+      built++;
     });
 
-    if (skipped.length) {
-      // 必須が埋まっていないときは送らない。中途半端な回答を残さないため
-      const fatal = skipped.filter((s) => s.indexOf('必須なのに空') === 0);
-      if (fatal.length) throw new Error(fatal.join(' / '));
+    // 必須の空・選択肢違反は送らない。中途半端な回答をフォームに残さないため
+    if (fatals.length) {
+      throw new Error(fatals.length + ' 件の問題で送信を中止しました:\n  ・' + fatals.join('\n  ・'));
+    }
+
+    if (dryRun) {
+      // フォームにゴミを残さずに、送れるかどうかだけ確かめる
+      sh.getRange(row, col.error).setValue(
+        '検証OK: ' + built + ' 項目を送信できます' +
+        (skipped.length ? '（スキップ: ' + skipped.join(' / ') + '）' : ''));
+      return true;
     }
 
     const submitted = fr.submit();
@@ -455,7 +549,8 @@ function submitRow_(sh, row) {
     // その切り分けは diagnose() でやる
     const c = ngCols_(sh);
     sh.getRange(row, c.error).setValue(String(err && err.message ? err.message : err));
-    sh.getRange(row, c.send).setValue(false);
+    // 検証のときはチェックを外さない。直して再検証できるようにする
+    if (!dryRun) sh.getRange(row, c.send).setValue(false);
     return false;
   } finally {
     lock.releaseLock();
@@ -506,6 +601,60 @@ function hintFor_(item) {
   return '';
 }
 
+
+/**
+ * 選択式の項目なら選択肢の配列を返す。それ以外は null。
+ */
+function choiceList_(item) {
+  const t = String(item.getType());
+  try {
+    if (t === 'MULTIPLE_CHOICE') return choiceValues_(item.asMultipleChoiceItem());
+    if (t === 'LIST') return choiceValues_(item.asListItem());
+    if (t === 'CHECKBOX') return choiceValues_(item.asCheckboxItem());
+  } catch (e) { /* 取れないものは照合しない */ }
+  return null;
+}
+
+function choiceValues_(typed) {
+  return typed.getChoices().map(function (c) { return c.getValue(); });
+}
+
+/**
+ * 「その他」が有効な項目は、選択肢に無い値も通る。
+ */
+function hasOther_(item) {
+  const t = String(item.getType());
+  try {
+    if (t === 'MULTIPLE_CHOICE') return item.asMultipleChoiceItem().hasOtherOption();
+    if (t === 'CHECKBOX') return item.asCheckboxItem().hasOtherOption();
+  } catch (e) { /* 取れないものは無しとみなす */ }
+  return false;
+}
+
+/**
+ * 前後の空白・全角半角・大文字小文字の違いを無視して照合する。
+ *
+ * フォームの選択肢は目で見ても差が分からないことがある（末尾の空白、全角の英字、
+ * NBSP など）。完全一致だけで弾くと「選択肢にあるのに無効と言われる」になる。
+ */
+function normalizeChoice_(v) {
+  return String(v)
+    .normalize('NFKC')
+    .replace(/[\s\u00a0\u3000]+/g, '')
+    .toLowerCase();
+}
+
+/**
+ * value を選択肢のどれかに寄せる。寄せられなければ null。
+ * 返すのは「フォーム側の正式な表記」（正規化前の文字列）。
+ */
+function matchChoice_(allowed, value) {
+  const v = normalizeChoice_(value);
+  for (let i = 0; i < allowed.length; i++) {
+    if (normalizeChoice_(allowed[i]) === v) return allowed[i];
+  }
+  return null;
+}
 
 function choices_(typed) {
   return typed.getChoices().map(function (c) { return c.getValue(); }).join(' / ');
