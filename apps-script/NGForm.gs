@@ -38,6 +38,8 @@ const NG_FIRST_ROW = 5;
 // 直接参照すると、列を組み替えたときに黙って別の列を読む
 const FALLBACK = { send: 32, sentAt: 33, responseId: 34, error: 35 };
 
+const VALIDATION_ROWS = 200;     // ドロップダウンを張る行数。多すぎると loadForm が重い
+
 const MAP_FORM_ID_CELL = 'B4';   // 編集用のフォーム ID
 const MAP_FIRST_ROW = 7;         // フォーム項目の 1 件目（6 行目が見出し）
 
@@ -105,8 +107,8 @@ function loadForm() {
       .build();
     spec.replace(/\s/g, '').split(',').filter(String).forEach(function (letter) {
       if (!/^[A-Za-z]{1,2}$/.test(letter)) return;
-      ng.getRange(NG_FIRST_ROW, colIndex_(letter), ng.getMaxRows() - NG_FIRST_ROW + 1, 1)
-        .setDataValidation(rule);
+      // 1000 行ぶん張ると重い。実際に使う範囲に絞る
+      ng.getRange(NG_FIRST_ROW, colIndex_(letter), VALIDATION_ROWS, 1).setDataValidation(rule);
       dropped.push(letter.toUpperCase() + '列 ← ' + it.getTitle() + '（' + meta.choices.length + ' 択）');
     });
   });
@@ -146,16 +148,32 @@ function sendChecked() {
   try {
     const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_NG);
     const col = ngCols_(sh);
-    const targets = [];
-    const already = [];
-    for (let r = NG_FIRST_ROW; r <= sh.getLastRow(); r++) {
-      if (sh.getRange(r, col.send).getValue() !== true) continue;
-      if (sh.getRange(r, col.sentAt).getValue()) { already.push(r); continue; }
-      targets.push(r);
+    const last = sh.getLastRow();
+    if (last < NG_FIRST_ROW) {
+      notify_('『送信』にチェックが入った行がありません。');
+      return;
     }
+
+    // ★シートは 1 回でまとめて読む。
+    // getRange(r, c).getValue() を行ごとに呼ぶと、行数 × 列数ぶんの往復になる。
+    // HYPERLINK 数式とリッチテキストのリンクから URL を取るため 3 種類を読む
+    const width = Math.max(sh.getLastColumn(), FALLBACK.error);
+    const rng = sh.getRange(NG_FIRST_ROW, 1, last - NG_FIRST_ROW + 1, width);
+    const values = rng.getValues();
+    const formulas = rng.getFormulas();
+    let rich = null;
+    try { rich = rng.getRichTextValues(); } catch (e) { /* 取れなければ値だけで判断する */ }
+
+    const targets = [];
+    let alreadySent = 0;
+    values.forEach(function (v, i) {
+      if (v[col.send - 1] !== true) return;
+      if (v[col.sentAt - 1]) { alreadySent++; return; }
+      targets.push({ row: NG_FIRST_ROW + i, cells: resolveCells_(v, formulas[i], rich && rich[i]) });
+    });
     if (!targets.length) {
-      notify_(already.length
-        ? 'チェックが入った ' + already.length + ' 行はすべて送信済みです。\n'
+      notify_(alreadySent
+        ? 'チェックが入った ' + alreadySent + ' 行はすべて送信済みです。\n'
           + '再送したい場合は「送信済み日時」と「フォーム回答ID」を消してください。'
         : '『送信』にチェックが入った行がありません。');
       return;
@@ -163,18 +181,24 @@ function sendChecked() {
 
     const form = form_();
     const mapping = mapRows_();
+    // ★項目のメタ情報は 1 回だけ取る。行ごとに取り直すと
+    // 行数 × 項目数 × 3 回ぶん Forms API を叩くことになる
+    const catalog = formCatalog_(form);
+
     const plans = [];
     const problems = [];
-    targets.forEach(function (r) {
-      const built = buildResponse_(form, mapping, sh, r);
+    const notes = [];   // 検証結果を「送信エラー」列へ 1 回で書くため溜める
+    targets.forEach(function (t) {
+      const built = buildResponse_(form, catalog, mapping, t.cells);
       if (built.fatals.length) {
-        sh.getRange(r, col.error).setValue(built.fatals.join('\n'));
-        problems.push(r + ' 行目\n  ・' + built.fatals.join('\n  ・'));
+        notes.push([t.row, built.fatals.join('\n')]);
+        problems.push(t.row + ' 行目\n  ・' + built.fatals.join('\n  ・'));
       } else {
-        sh.getRange(r, col.error).setValue('検証OK: ' + built.count + ' 項目');
-        plans.push({ row: r, response: built.response, skipped: built.skipped });
+        notes.push([t.row, '検証OK: ' + built.count + ' 項目']);
+        plans.push({ row: t.row, response: built.response, skipped: built.skipped });
       }
     });
+    notes.forEach(function (n) { sh.getRange(n[0], col.error).setValue(n[1]); });
 
     if (problems.length) {
       SpreadsheetApp.flush();
@@ -190,13 +214,14 @@ function sendChecked() {
     plans.forEach(function (p) {
       try {
         const res = p.response.submit();
-        sh.getRange(p.row, col.sentAt)
-          .setValue(Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm'));
         let id = '(取得できず)';
         try { id = res.getId(); } catch (e) { /* 環境により取れない。送信自体は成功 */ }
-        sh.getRange(p.row, col.responseId).setValue(id);
-        sh.getRange(p.row, col.error)
-          .setValue(p.skipped.length ? '送信済み（スキップ: ' + p.skipped.join(' / ') + '）' : '');
+        // 送信済み日時 / フォーム回答ID / 送信エラー は隣り合っているので 1 回で書く
+        sh.getRange(p.row, col.sentAt, 1, 3).setValues([[
+          Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm'),
+          id,
+          p.skipped.length ? '送信済み（スキップ: ' + p.skipped.join(' / ') + '）' : '',
+        ]]);
         SpreadsheetApp.flush();   // 1 通ごとに確定させる。落ちても送った分は残る
         sent.push(p.row);
       } catch (err) {
@@ -210,6 +235,7 @@ function sendChecked() {
     lock.releaseLock();
   }
 }
+
 
 
 // ======== 以下は内部処理 ========
@@ -296,11 +322,7 @@ function mapRows_() {
  * 1 行ぶんの回答を組み立てる。送信はしない。
  * 返す fatals が空でなければ、その行は送ってはいけない。
  */
-function buildResponse_(form, mapping, sh, row) {
-  const itemsById = {};
-  form.getItems().forEach(function (it) { itemsById[String(it.getId())] = it; });
-  const values = rowValues_(sh, row);
-
+function buildResponse_(form, catalog, mapping, cells) {
   // ---- 1 段目: 全項目の値を出し、セクションごとに使われているかを見る ----
   //
   // ★フォームはデバイスの回答でページが分岐する。分岐先のページの項目は
@@ -319,10 +341,10 @@ function buildResponse_(form, mapping, sh, row) {
     const colSpec = String(m[5] == null ? '' : m[5]).trim();
     const fixed = String(m[6] == null ? '' : m[6]).trim();
     if (!itemId || (!colSpec && !fixed)) return;
-    const value = valueFor_(colSpec, fixed, values);
+    const value = valueFor_(colSpec, fixed, cells);
     if (value !== '') used[section] = true;
     plan.push({
-      m: m, section: section, value: value,
+      m: m, section: section, value: value, itemId: itemId,
       where: colSpec ? colSpec.toUpperCase() + '列' : '固定値 ' + fixed,
     });
   });
@@ -334,8 +356,9 @@ function buildResponse_(form, mapping, sh, row) {
 
   plan.forEach(function (p) {
     const m = p.m;
-    const item = itemsById[String(m[4]).trim()];
-    if (!item) { skipped.push('項目が見つからない: ' + m[1]); return; }
+    const entry = catalog[p.itemId];
+    if (!entry) { skipped.push('項目が見つからない: ' + m[1]); return; }
+    const item = entry.item, meta = entry.meta;
 
     let value = p.value;
     if (value === '') {
@@ -351,7 +374,6 @@ function buildResponse_(form, mapping, sh, row) {
     // 選択式は送る前に突き合わせる。createResponse に任せると
     // 「アイテムに無効な回答が送信されました: IT」しか出ず、
     // どの項目か・何なら通るのかが分からない
-    const meta = itemMeta_(item);
     if (meta.choices && meta.choices.length && !meta.other) {
       const parts = meta.type === 'CHECKBOX'
         ? value.split(',').map(function (x) { return x.trim(); }).filter(String)
@@ -371,7 +393,7 @@ function buildResponse_(form, mapping, sh, row) {
 
     let ir = null;
     try {
-      ir = responseFor_(item, value);
+      ir = responseFor_(item, meta.type, value);
     } catch (err) {
       fatals.push('値を回答に変換できません: 「' + m[1] + '」(' + meta.type + ') に "' + value + '" ← '
         + p.where + '\n      ' + (err && err.message ? err.message : err));
@@ -391,23 +413,32 @@ function buildResponse_(form, mapping, sh, row) {
 }
 
 /**
- * 行の値を読む。
+ * 項目とそのメタ情報を itemId で引ける形にまとめる。
+ *
+ * ★isRequired() / getChoices() / hasOtherOption() は 1 回ごとに Forms API を叩く。
+ * 行ごとに取り直すと 行数 × 項目数 × 3 回になり、数行でも十数秒かかる。
+ * 1 回の実行で 1 度だけ取る。
+ */
+function formCatalog_(form) {
+  const byId = {};
+  form.getItems().forEach(function (it) {
+    byId[String(it.getId())] = { item: it, meta: itemMeta_(it) };
+  });
+  return byId;
+}
+
+/**
+ * まとめ読みした 1 行分から、送る値を決める。
  *
  * ★=HYPERLINK("url","ラベル") のセルは getValues() だとラベルしか返らない。
  * リンク列（テストケースリンク・証跡）は URL を送りたいので、URL を取り出す。
  */
-function rowValues_(sh, row) {
-  const rng = sh.getRange(row, 1, 1, Math.max(sh.getLastColumn(), 1));
-  const values = rng.getValues()[0];
-  const formulas = rng.getFormulas()[0];
-  let rich = null;
-  try { rich = rng.getRichTextValues()[0]; } catch (e) { /* 取れなければ値だけで判断する */ }
-
+function resolveCells_(values, formulas, richRow) {
   return values.map(function (v, i) {
     const m = /^=HYPERLINK\(\s*"([^"]+)"/i.exec(String(formulas[i] || ''));
     if (m) return m[1];
-    if (rich && rich[i]) {
-      const u = rich[i].getLinkUrl();
+    if (richRow && richRow[i]) {
+      const u = richRow[i].getLinkUrl();
       if (u) return u;
     }
     return v;
@@ -514,8 +545,8 @@ function matchChoice_(allowed, value) {
 }
 
 /** 項目の型に合わせて ItemResponse を作る。作れない型は null。 */
-function responseFor_(item, value) {
-  const t = String(item.getType());
+function responseFor_(item, type, value) {
+  const t = type;
   const s = String(value);
   if (t === 'TEXT') return item.asTextItem().createResponse(s);
   if (t === 'PARAGRAPH_TEXT') return item.asParagraphTextItem().createResponse(s);
