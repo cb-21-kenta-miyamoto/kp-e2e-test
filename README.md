@@ -42,6 +42,19 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
 | [`e2e-execute`](./skills/e2e-execute/SKILL.md) | ブロック 1 つを spec 化して実施し、証跡と記録まで残す |
 | [`e2e-ng-report`](./skills/e2e-ng-report/SKILL.md) | 落ちたケースを切り分けて GitHub issue にする |
 
+## 場所（改修をまたいで固定のもの）
+
+| もの | ID / リンク |
+| --- | --- |
+| Drive ルート | [AIテスト](https://drive.google.com/drive/folders/1dcSjLjztl1V4_ioQTsaj4I1g5OyqbZm2) |
+| 実施記録のテンプレート | [【FMT】ケース一覧・実施記録](https://docs.google.com/spreadsheets/d/1ec120eoL-1MYHhmS2r-utYdm7l2GUIqMM6dsiB_dYPE/edit) — **4 タブ。改修ごとにコピーする** |
+| NG 投稿の中間ブック | [【E2E】NG管理](https://docs.google.com/spreadsheets/d/1XN-cwiwbl22axv0vmzEhrXDAAr8bi9DDgy85SkVjDsg/edit) — **改修横断で 1 本** |
+| 証跡アップロード | `dx-kpiee/e2e-test/scripts/upload-evidence.sh` |
+
+**改修ごとのブックは FMT をコピーして作る。** コピーすると
+`実施方法` / `サマリ`（事前準備チェックリスト込み）/ `ケース一覧・実施記録` / `ケース外のNG` が付いてくる。
+**ブックを開いた人は、まず `実施方法` タブを読む。**
+
 ## references
 
 | 文書 | 中身 |
