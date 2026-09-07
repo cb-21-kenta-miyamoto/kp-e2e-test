@@ -33,7 +33,12 @@ const SHEET_NG = 'NG一覧';
 const SHEET_MAP = 'フォーム項目';
 
 // 貼り替え忘れを検出するための版。diagnose() で表示する
-const SCRIPT_VERSION = '2026-09-07.1';
+const SCRIPT_VERSION = '2026-09-07.2';
+
+// 送信中の行に立てる印。送信の「前に」立てて flush することで、
+// 並行して走った実行（onEdit トリガー + メニューからの手動送信）が
+// 同じ行を二度送るのを防ぐ
+const CLAIM_MARK = '送信中…';
 
 const NG_HEADER_ROW = 4;   // 見出し行。列は名前で引くので、位置が動いても壊れない
 const NG_FIRST_ROW = 5;    // データの開始行（5 行目は記入例）
@@ -161,7 +166,7 @@ function onOpen() {
 function prepare() {
   const n = loadFormItems_();
   const warn = verifyTarget_();
-  const added = ensureTrigger_();
+  const trig = ensureTrigger_();
   let dd = '';
   try {
     syncChoiceValidation();
@@ -172,7 +177,7 @@ function prepare() {
   notify_(
     (warn ? '⚠ ' + warn + '\n\n' : '') +
     'フォームの項目を ' + n + ' 件読み込みました。\n' +
-    (added ? '送信トリガーも入れました。' : '送信トリガーは既に入っていました。') + '\n' + dd + '\n' +
+    trig + '\n' + dd + '\n' +
     '「フォーム項目」タブの「対応する列」を埋めれば準備完了です。\n' +
     'あとは NG一覧 の「送信」にチェックを入れるだけで投稿されます。'
   );
@@ -180,12 +185,19 @@ function prepare() {
 
 /** 送信チェックで発火するトリガーを入れる。二重登録はしない。入れたら true。 */
 function ensureTrigger_() {
-  const already = ScriptApp.getProjectTriggers()
-    .some(function (t) { return t.getHandlerFunction() === 'onEditHandler'; });
-  if (already) return false;
+  const mine = ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'onEditHandler'; });
+
+  // 同じ関数のトリガーが 2 つあると 1 回の編集で 2 回発火し、同じ NG が重複投稿される。
+  // 「あるかどうか」だけ見て足さないのでは足りず、余りを消す必要がある
+  for (let i = 1; i < mine.length; i++) ScriptApp.deleteTrigger(mine[i]);
+  if (mine.length > 1) return '重複していた送信トリガー ' + (mine.length - 1) + ' 件を削除しました。';
+  if (mine.length === 1) return '送信トリガーは既に入っていました。';
+
   ScriptApp.newTrigger('onEditHandler').forSpreadsheet(SpreadsheetApp.getActive()).onEdit().create();
-  return true;
+  return '送信トリガーを入れました。';
 }
+
 
 /**
  * 送信できないときに、どこで止まっているかを一括で出す。
@@ -221,9 +233,15 @@ function diagnose() {
     .filter(function (t) { return t.getHandlerFunction() === 'onEditHandler'; });
   out.push('');
   out.push('■ トリガー');
-  out.push(trigs.length
-    ? '  onEditHandler が ' + trigs.length + ' 件入っています'
-    : '  ⚠ 無し。「準備する（初回だけ）」を押してください（メニューから手動送信は可能）');
+  if (trigs.length === 0) {
+    out.push('  ⚠ 無し。「準備する（初回だけ）」を押してください（メニューから手動送信は可能）');
+  } else if (trigs.length === 1) {
+    out.push('  onEditHandler が 1 件。正常です');
+  } else {
+    out.push('  ⚠ onEditHandler が ' + trigs.length + ' 件あります。'
+      + '1 回の編集で ' + trigs.length + ' 回発火し、重複投稿になります。'
+      + '「準備する（初回だけ）」を押すと余りを削除します');
+  }
 
   out.push('');
   out.push('■ フォーム');
@@ -423,7 +441,9 @@ function sendCheckedRows() {
     if (sh.getRange(row, col.sentAt).getValue()) continue;
     if (submitRow_(sh, row)) n++;
   }
-  notify_(n + ' 件を送信しました。');
+  notify_(n === 0
+    ? '送信できる行がありませんでした（未チェック、または既に送信済み）。'
+    : n + ' 件を送信しました。');
 }
 
 // ---- 以下は内部処理 ----
@@ -503,11 +523,22 @@ function submitRow_(sh, row, dryRun) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return false;
   try {
-    // 二重送信を防ぐ。ここを外すとトリガーの再実行で同じ NG が二重に登録される
     const col = ngCols_(sh);
-    if (!dryRun && sh.getRange(row, col.sentAt).getValue()) {
-      sh.getRange(row, col.error).setValue('送信済みのためスキップしました');
-      return false;
+    if (!dryRun) {
+      // 二重送信を防ぐ。
+      //
+      // 読んで（空だ）→ 送る→ 書く の順だと、2 つの実行が競って両方送る。
+      // setValue は実行の終わりまで遅延されうるので、ロックを持っている間に
+      // 書いただけでは他の実行から見えない（Apps Script の既知の落とし穴）。
+      // だから「送る前に印を立てて flush する」= 行を確保してから送る。
+      const already = sh.getRange(row, col.sentAt).getValue();
+      if (already) {
+        sh.getRange(row, col.error)
+          .setValue('送信済みのためスキップしました（' + already + '）');
+        return false;
+      }
+      sh.getRange(row, col.sentAt).setValue(CLAIM_MARK);
+      SpreadsheetApp.flush();   // ★これが無いと確保が他の実行に見えない
     }
     const ss = SpreadsheetApp.getActive();
     const map = ss.getSheetByName(SHEET_MAP);
@@ -601,14 +632,21 @@ function submitRow_(sh, row, dryRun) {
     sh.getRange(row, col.sentAt).setValue(Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm'));
     sh.getRange(row, col.responseId).setValue(safeResponseId_(submitted));
     sh.getRange(row, col.error).setValue(skipped.length ? '送信済み（スキップ: ' + skipped.join(' / ') + '）' : '');
+    SpreadsheetApp.flush();
     return true;
   } catch (err) {
     // ここに来られない失敗（onEdit が発火しない等）は Y列も空のままになる。
     // その切り分けは diagnose() でやる
     const c = ngCols_(sh);
     sh.getRange(row, c.error).setValue(String(err && err.message ? err.message : err));
-    // 検証のときはチェックを外さない。直して再検証できるようにする
-    if (!dryRun) sh.getRange(row, c.send).setValue(false);
+    if (!dryRun) {
+      // 確保だけして送れなかったので印を外す。残すと以後ずっと送れなくなる
+      if (sh.getRange(row, c.sentAt).getValue() === CLAIM_MARK) {
+        sh.getRange(row, c.sentAt).clearContent();
+      }
+      sh.getRange(row, c.send).setValue(false);
+    }
+    SpreadsheetApp.flush();
     return false;
   } finally {
     lock.releaseLock();
