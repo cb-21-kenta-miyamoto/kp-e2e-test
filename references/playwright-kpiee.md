@@ -23,6 +23,30 @@ pnpm exec playwright test --project=<改修ID>
 - **実施したい実装が対象環境にデプロイされているかを先に確認する。**
   IT は `test/it-YYYYMMDD` を手動でデプロイする運用で、feature ブランチは載っていないことがある
 
+## 対象環境にデプロイされているかを、ログインせずに確かめる
+
+**IT は `test/it-YYYYMMDD` を手動でデプロイする運用で、feature ブランチは載っていないことがある。**
+実施前に確認する。ログインも認証も要らない。
+
+```bash
+# ① SPA のエントリバンドルを取って、i18n の文言があるか見る
+curl -s https://it.kpiee.xyz/dx/workspaces/<ws>/reports | grep -o 'src="/dx/assets/[^"]*"'
+curl -s https://it.kpiee.xyz/dx/assets/index-XXXX.js | grep -c "セルにコメント"
+
+# ② API のルートがあるかを 401 / 404 で切り分ける
+curl -s -o /dev/null -w "%{http_code}" https://it.kpiee.xyz/g/dxkp/api/v1/workspaces/<ws>/reports/1/comment_threads
+```
+
+| 結果 | 意味 |
+| --- | --- |
+| バンドルに文言がある | **フロントは載っている** |
+| `401` | **バックエンドのルートは載っている**（認可で弾かれただけ）|
+| `404` | ルートが無い = **まだデプロイされていない** |
+
+> [!NOTE]
+> **class 名や API パスはエントリバンドルに出ない。** コンポーネントは遅延チャンク側なので、
+> エントリを grep しても 0 件になる。**i18n の文言で判定する**（文言はエントリに入る）。
+
 ## Handsontable（レポートの表）
 
 > [!IMPORTANT]
@@ -32,9 +56,10 @@ pnpm exec playwright test --project=<改修ID>
 
 ```ts
 const PANE = {
-  master: ".ht_master",            // 本文セル
-  left: ".ht_clone_inline_start",  // 固定列（軸ラベル / 表側）
-  top: ".ht_clone_top",            // 固定行（表頭 / ヘッダー）
+  master: ".ht_master",                            // 本文セル
+  left: ".ht_clone_inline_start",                  // 固定列（軸ラベル / 表側）
+  top: ".ht_clone_top",                            // 固定行（表頭 / ヘッダー）
+  corner: ".ht_clone_top_inline_start_corner",     // 表の左上隅（コメントできない）
 } as const;
 
 const cells = table.locator(`${PANE.left} td`);
@@ -46,20 +71,76 @@ const cells = table.locator(`${PANE.left} td`);
 ## ロケータ
 
 **`data-testid` はレポート側にはあるが、`shared/components/Comment/` には 1 つも無い。**
-文言依存になるので、変わりやすい箇所は testid 追加 PR を切る判断をする。
+ただし**代わりに使える class 定数がコード側にある**ので、文言依存で書く必要はない。
+`shared/domains/comment.ts` と `features/reports/domains/reportCellComment.ts` が
+`kp-comment-*` / `kp-cell-comment-*` を定数として持っている。**testid が無い = 文言依存、ではない。**
 
-| 対象 | 取り方 |
-| --- | --- |
-| レポート表 | `getByTestId("report-table")` |
-| 右クリックメニュー | `page.locator("[class*=context]")` の可視なもの |
-| コメント入力欄 | `getByLabel("コメント本文")`（contenteditable）|
-| 送信ボタン | `getByRole("button", { name: "コメント", exact: true })` |
-| コメントの印 | セルの class `kp-cell-comment-unresolved` / `kp-cell-comment-resolved` |
+> [!IMPORTANT]
+> **ロケータは実装から採る。i18n から推測しない。**
+> 文言は `locales/features/reports.ts` の `reports.comment.*`、
+> class は上の 2 ファイル。**探索用 spec を書く前に、まずこの 3 ファイルを読むほうが速い。**
+
+| 対象 | 取り方 | 根拠 |
+| --- | --- | --- |
+| レポート表 | `getByTestId("report-table")` | — |
+| **セルの右クリックメニュー** | `.context-menu-popover` | `KpMenuPopover` の `custom-class` |
+| 印にホバーしたときのメニュー | `.kp-cell-comment-context-menu` | `CellCommentContainer.vue` |
+| コメント入力欄 | `getByLabel("コメント本文")` / `.kp-comment-editor` | `role="textbox"` + `aria-label` |
+| 送信ボタン | `getByRole("button", { name: "コメント", exact: true })` | 可視テキスト |
+| スレッドの吹き出し | `.kp-comment-thread-popover` | `COMMENT_THREAD_POPOVER_CLASS` |
+| コメント一覧サイドバー | `.kp-comment-list-sidebar` | `COMMENT_LIST_SIDEBAR_CLASS` |
+| 一覧の検索欄 | `input[name="kp-comment-search"]` | `CommentListSidebar.vue` |
+| 発言単位のケバブ | `.kp-comment-kebab-trigger` | `CommentThreadItemMenuButton.vue` |
+| スレッドヘッダーのケバブ | `.kp-comment-header-kebab-trigger` | `CommentThreadHeaderActions.vue` |
+| ケバブのメニュー本体 | `[class*="kp-comment-header-menu-"]` | インスタンスIDが付くので前方一致 |
+| 削除の確認 | `getByRole("dialog", { name: "本当にこのコメントを削除しますか？" })` | `role="dialog"` + `aria-label` |
+| コメントの印 | セルの class `kp-cell-comment-unresolved` / `-resolved` | `REPORT_COMMENT_MARKER_CLASS` |
 
 > [!NOTE]
 > **送信ボタンのアクセシブル名は可視テキストの「コメント」。**
-> i18n の `composer.submit_button_label`（「コメントを送信」）は aria-label として効いていない。
-> **アクセシブル名は i18n から推測せず、実測する。**
+> i18n の `composer.submit_button_label`（「コメントを送信」）は
+> `KpButton` の prop に渡されており、内側の `button` へ `aria-label` として降りていない。
+> **`KpButton` に aria-label を渡している箇所は全部これを疑う。**
+
+### 実装から採った定数
+
+| もの | 値 | 出どころ |
+| --- | --- | --- |
+| 本文の最大文字数 | **1,000 文字** | `COMMENT_BODY_MAX_LENGTH` |
+| 1 スレッドの発言数上限 | **100 件**（起点を含む）| `COMMENT_THREAD_MAX_COMMENT_COUNT` |
+| 一覧の 1 ページ | **20 スレッド固定** | API の `page` パラメーターの説明 |
+| API 側の本文上限 | 65,535 **バイト** | `CreateReportCommentThreadBody` |
+
+**フロント 1,000 文字と API 65,535 バイトはわざとずれている。** 画面のケース（SPEC-1 G 群 /
+NFR-2 A 群）は 1,000、API のケース（MB-2 A 群）は 65,535 で書く。**片方の値で両方を書かない。**
+
+> [!IMPORTANT]
+> **権限が無いとき「セルにコメント」は消えず、非活性で出る。**
+> `useReportCellCommentMenu` は `isDisabled` を付けて項目を残し、
+> ツールチップに「コメントの操作権限がないため、\nコメントできません。」を出す。
+> **「メニューに出ないこと」を期待値にすると落ちる。**
+
+## API を叩くときのエンドポイント
+
+```
+GET    /g/dxkp/api/v1/workspaces/{ws}/reports/{id}/comment_threads       ① 一覧
+POST   /g/dxkp/api/v1/workspaces/{ws}/reports/{id}/comment_threads       ② 作成
+GET    .../comment_threads/{tid}                                          ③ 単体
+PATCH  .../comment_threads/{tid}                                          ④ 解決 / 再開
+POST   .../comment_threads/{tid}/comments                                 ⑤ 返信
+PATCH  .../comment_threads/{tid}/comments/{cid}                           ⑥ 編集
+DELETE .../comment_threads/{tid}/comments/{cid}                           ⑦ 削除
+GET    /g/dxkp/api/v1/workspaces/{ws}/reports/{id}/table_data            行ID・列IDを引く
+```
+
+> [!WARNING]
+> **タイムラインの発言判定は `event_type`。`action_type` は v1 モデルの名前。**
+> `action_type` だけを見る前処理は 1 件も消せず、**エラーも出さずに「何もしない」。**
+> 前処理が空振りしていると、次の実行が「新規投稿」ではなく「返信」になって
+> ケースの前提が壊れる。**両方を見るか、消えた件数をログに出して確かめる。**
+
+**`table_data` で行ID・列IDが引ける。** これがあると seed を画面操作なしで作れるので、
+大量スレッド（NFR-1）やページ境界（NFR-2 D 群）は API だけで用意できる。
 
 ## 状態が残るテストは前処理で消す
 
@@ -69,20 +150,13 @@ const cells = table.locator(`${PANE.left} td`);
 > ケースの前提が壊れる。**
 
 ```ts
-async function clearAllThreads(request: APIRequestContext) {
-  const base = `/g/dxkp/api/v1/workspaces/${WS}/reports/${REPORT}/comment_threads`;
-  for (let p = 1; p <= 30; p++) {
-    const res = await request.get(`${base}?page=${p}`);
-    if (!res.ok()) return;
-    const d = await res.json();
-    for (const t of d.threads ?? []) {
-      const root = (t.entries ?? []).find((e: any) => e.action_type === "comment");
-      if (root) await request.delete(`${base}/${t.id}/comments/${root.id}`);
-    }
-    if (p >= (d.pagination?.max_page ?? 1)) break;
-  }
-}
-test.beforeAll(async ({ request }) => { await clearAllThreads(request); });
+import { ReportCommentApiClient } from "../../api-clients/report-comment.api";
+
+test.beforeAll(async ({ request }) => {
+  const api = new ReportCommentApiClient(request, { workspaceId: WS, reportId: REPORT });
+  const deleted = await api.clearAllThreads();
+  console.info(`[前処理] ${deleted} 件消した`);   // ★消えた件数を出す。0 なら空振りを疑う
+});
 ```
 
 **API を叩ける `request` fixture は storageState を引き継ぐ**ので、前処理・seed に使える。

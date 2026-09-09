@@ -47,7 +47,7 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
 | もの | ID / リンク |
 | --- | --- |
 | Drive ルート | [AIテスト](https://drive.google.com/drive/folders/1dcSjLjztl1V4_ioQTsaj4I1g5OyqbZm2) |
-| 実施記録のテンプレート | [【FMT】ケース一覧・実施記録](https://docs.google.com/spreadsheets/d/1ec120eoL-1MYHhmS2r-utYdm7l2GUIqMM6dsiB_dYPE/edit) — **4 タブ。改修ごとにコピーする** |
+| 実施記録のテンプレート | [【E2E】ケース一覧・実施記録](https://docs.google.com/spreadsheets/d/1ec120eoL-1MYHhmS2r-utYdm7l2GUIqMM6dsiB_dYPE/edit) — **4 タブ。改修ごとにコピーする**（本文では FMT と呼ぶ。Drive 上の名前は `【E2E】`）|
 | NG 投稿の中間ブック | [【E2E】NG管理](https://docs.google.com/spreadsheets/d/1XN-cwiwbl22axv0vmzEhrXDAAr8bi9DDgy85SkVjDsg/edit) — **改修横断で 1 本** |
 | 証跡アップロード | `dx-kpiee/e2e-test/scripts/upload-evidence.sh` |
 
@@ -75,4 +75,7 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
 
 | 改修 | ケース | 状態 |
 | --- | --- | --- |
-| `IMP_KP001350` レポートセルコメント | 450 件 / 17 ブロック | SPEC-1 A 群まで実施（OK 4 / NG 2）。[ケース PR](https://github.com/f-scratch/kpiee-designs/pull/669) / [Spec PR](https://github.com/f-scratch/dx-kpiee/pull/18559) / [実施記録](https://docs.google.com/spreadsheets/d/1ComMteyOhzlEbdAqcThOretkb3UafPkylm103UfWk6w/edit) |
+| `IMP_KP001350` レポートセルコメント | 524 件 / 25 ブロック | 準備中（IT 実施へ切り替え）。ケースはシートへ展開済み・共有ファイル確定済み。[ケース PR](https://github.com/f-scratch/kpiee-designs/pull/669) / [Spec PR](https://github.com/f-scratch/dx-kpiee/pull/18559) / [実施記録](https://docs.google.com/spreadsheets/d/1_DA3tEDA6txMiPX0jthQU9sUMjvluFDerTaN5-PDdQs/edit) |
+
+**実施環境は `https://it.kpiee.xyz/dx/workspaces/149/reports`。**
+ローカルで回した 450 件版の記録は [【旧・450件版】](https://docs.google.com/spreadsheets/d/1ComMteyOhzlEbdAqcThOretkb3UafPkylm103UfWk6w/edit) に残してある。
