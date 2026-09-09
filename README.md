@@ -65,6 +65,12 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
 | [`ng-form.md`](./references/ng-form.md) | NG フォームへの投稿 — 中間ブックと Apps Script、フォーム 25 項目と選択肢 |
 | [`playwright-kpiee.md`](./references/playwright-kpiee.md) | kpiee で spec を書くときの落とし穴 |
 
+## scripts
+
+| ファイル | 中身 |
+| --- | --- |
+| [`extract-cases.py`](./scripts/extract-cases.py) | ケース文書から ケースID / ケース名 / 確認観点（ケース単位）を抽出する。シートへの流し込みと、**更新後の再突き合わせ**に使う |
+
 ## apps-script
 
 | ファイル | 中身 |
