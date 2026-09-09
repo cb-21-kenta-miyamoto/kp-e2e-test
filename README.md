@@ -5,6 +5,9 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
 改修ごとに散らばるもの（設計書 / 実装 PR / テストケース / spec / 証跡 / 実施記録 / NG）を、
 **ケースID を軸に一本の線でつなぐ**のがねらい。
 
+**PD / QA が実施に使う改修テストシート（ミドルバック FMT）への展開は
+[`mb-testsheet-build`](./skills/mb-testsheet-build/SKILL.md) が担当する**（① の出力を別の様式へ落とす枝）。
+
 大元の方針は [dx-kpiee#18521](https://github.com/f-scratch/dx-kpiee/issues/18521)。
 この repo はそれを skill として手順化したもの。**方針が変わったら #18521 が正で、ここを追随させる。**
 
@@ -27,6 +30,14 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
       │
       ▼
 ⑤ e2e-ng-report     NG を切り分けて issue にする       → dx-kpiee に issue
+
+① の出力からは、もう 1 本の枝が出る。
+
+```
+① e2e-case-create のブロック文書
+      │
+      ▼
+  mb-testsheet-build   改修テストシート（ミドルバック FMT）へ展開  → PD / QA が実施する
 ```
 
 **③ までは 1 回だけ・並列にしない。④ だけがブロック単位で並列に走る。**
@@ -41,6 +52,7 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
 | [`e2e-prepare`](./skills/e2e-prepare/SKILL.md) | 実施の前準備（Drive / スプレッドシート / Spec PR の箱 / テストデータ）|
 | [`e2e-execute`](./skills/e2e-execute/SKILL.md) | ブロック 1 つを spec 化して実施し、証跡と記録まで残す |
 | [`e2e-ng-report`](./skills/e2e-ng-report/SKILL.md) | 落ちたケースを切り分けて GitHub issue にする |
+| [`mb-testsheet-build`](./skills/mb-testsheet-build/SKILL.md) | ブロック文書を **改修テストシート（ミドルバック FMT）** へ展開する（PD / QA 向け。上の ①〜⑤ とは別のシート）|
 
 ## 場所（改修をまたいで固定のもの）
 
@@ -64,6 +76,7 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
 | [`evidence.md`](./references/evidence.md) | 証跡の命名規則と「代表証跡だけ置く」の考え方 |
 | [`ng-form.md`](./references/ng-form.md) | NG フォームへの投稿 — 中間ブックと Apps Script、フォーム 25 項目と選択肢 |
 | [`playwright-kpiee.md`](./references/playwright-kpiee.md) | kpiee で spec を書くときの落とし穴 |
+| [`mb-testsheet.md`](./references/mb-testsheet.md) | 改修テストシート（ミドルバック FMT）の 4 層構造、層をつなぐ数式、複製直後に壊れているところ |
 
 ## scripts
 
@@ -82,6 +95,10 @@ kpiee の改修に対して **E2E テストのケースを作り、実施し、�
 | 改修 | ケース | 状態 |
 | --- | --- | --- |
 | `IMP_KP001350` レポートセルコメント | 524 件 / 25 ブロック | 準備中（IT 実施へ切り替え）。ケースはシートへ展開済み・共有ファイル確定済み。[ケース PR](https://github.com/f-scratch/kpiee-designs/pull/669) / [Spec PR](https://github.com/f-scratch/dx-kpiee/pull/18559) / [実施記録](https://docs.google.com/spreadsheets/d/1_DA3tEDA6txMiPX0jthQU9sUMjvluFDerTaN5-PDdQs/edit) |
+
+**改修テストシート（PD / QA 向け）も同じケースから起こしてある。**
+[【kpiee】改修テスト（ミドルバック）_レポートセルコメント](https://docs.google.com/spreadsheets/d/1YzUu9k57YmBRgwB_c-hJ81xm87-knFGNJmq2-NtH_Ik/) —
+25 ブロック × 3 枚組 = 75 タブ / 524 ケース。手順は [dx-kpiee#18721](https://github.com/f-scratch/dx-kpiee/issues/18721)。
 
 **実施環境は `https://it.kpiee.xyz/dx/workspaces/149/reports`。**
 ローカルで回した 450 件版の記録は [【旧・450件版】](https://docs.google.com/spreadsheets/d/1ComMteyOhzlEbdAqcThOretkb3UafPkylm103UfWk6w/edit) に残してある。
